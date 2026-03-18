@@ -5,30 +5,94 @@
   - text_chunks：正文 chunk 的向量索引
   - figure_captions：图注的向量索引（单独存储，便于图表类问题专项检索）
 
-embedding 由 ChromaDB 内置的 OpenAIEmbeddingFunction 自动管理，
-写入时自动 embed，查询时也自动 embed query，不需要手动调用 embedding API。
+Embedding 使用 Google 的 text-embedding-004 模型（通过 GEMINI_API_KEY 调用），
+自定义 ChromaDB EmbeddingFunction 封装批量调用逻辑。
 
 ChromaDB 使用本地持久化模式（PersistentClient），数据存在 storage/chroma/ 目录。
 """
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import chromadb
-from chromadb.utils import embedding_functions
+from chromadb import EmbeddingFunction
+from google import genai
+from google.genai.errors import ClientError
 
-from app.config import CHROMA_DIR, EMBEDDING_MODEL, RETRIEVE_TOP_K
+from app.config import CHROMA_DIR, EMBEDDING_MODEL, GEMINI_API_KEY, RETRIEVE_TOP_K
 
 logger = logging.getLogger(__name__)
 
-# 模块级单例，避免每次调用都重新连接
+# 模块级单例，避免每次调用都重新连接或重新创建客户端
 _client: chromadb.ClientAPI | None = None
-_embed_fn: Any = None
+_embed_fn: EmbeddingFunction | None = None
 
 # 用于判断用户 query 是否涉及图表，触发额外检索 figure_captions collection
 _FIGURE_KW = re.compile(r"(图|表|figure|table|chart|plot|diagram)", re.IGNORECASE)
+
+
+class GeminiEmbeddingFunction(EmbeddingFunction):
+    """
+    自定义 ChromaDB EmbeddingFunction，调用 Gemini embedding API。
+
+    免费版限制：每分钟 100 次 embedding 请求。
+    应对策略：小批量（每批 50 条） + 批间间隔 + 429 自动重试等待。
+    """
+
+    BATCH_SIZE = 50        # 每批条数，留出余量避免刚好踩线
+    BATCH_DELAY = 1.0      # 批间等待秒数，平滑请求速率
+    MAX_RETRIES = 5        # 429 重试次数上限
+
+    def __init__(self, api_key: str, model_name: str):
+        self._genai_client = genai.Client(api_key=api_key)
+        self._model = model_name
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        """发送单批 embedding 请求，遇到 429 自动等待重试。"""
+        for attempt in range(self.MAX_RETRIES):
+            try:
+                result = self._genai_client.models.embed_content(
+                    model=self._model,
+                    contents=texts,
+                )
+                return [e.values for e in result.embeddings]
+            except ClientError as e:
+                if e.status_code == 429:
+                    # 从错误信息中提取建议等待时间，兜底 60 秒
+                    wait = 62
+                    msg = str(e)
+                    if "retryDelay" in msg:
+                        import re as _re
+                        m = _re.search(r"retry(?:Delay)?.*?(\d+)", msg, _re.IGNORECASE)
+                        if m:
+                            wait = int(m.group(1)) + 2
+                    logger.warning(
+                        "Embedding rate limited (attempt %d/%d), waiting %ds...",
+                        attempt + 1, self.MAX_RETRIES, wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
+        raise RuntimeError(f"Embedding failed after {self.MAX_RETRIES} retries due to rate limiting")
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        all_embeddings: list[list[float]] = []
+        total_batches = (len(input) + self.BATCH_SIZE - 1) // self.BATCH_SIZE
+        for batch_idx in range(total_batches):
+            start = batch_idx * self.BATCH_SIZE
+            batch = input[start : start + self.BATCH_SIZE]
+            logger.info(
+                "Embedding batch %d/%d (%d texts)", batch_idx + 1, total_batches, len(batch)
+            )
+            embeddings = self._embed_batch(batch)
+            all_embeddings.extend(embeddings)
+            # 批间等待，避免连续请求打满配额
+            if batch_idx < total_batches - 1:
+                time.sleep(self.BATCH_DELAY)
+        return all_embeddings
 
 
 def _get_client() -> chromadb.ClientAPI:
@@ -39,11 +103,12 @@ def _get_client() -> chromadb.ClientAPI:
     return _client
 
 
-def _get_embed_fn():
+def _get_embed_fn() -> GeminiEmbeddingFunction:
     global _embed_fn
     if _embed_fn is None:
-        _embed_fn = embedding_functions.OpenAIEmbeddingFunction(
-            model_name=EMBEDDING_MODEL
+        _embed_fn = GeminiEmbeddingFunction(
+            api_key=GEMINI_API_KEY,
+            model_name=EMBEDDING_MODEL,
         )
     return _embed_fn
 

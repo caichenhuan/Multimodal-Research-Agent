@@ -3,6 +3,7 @@
 所有路径、模型名称、超参数集中在此管理，其他模块统一从这里导入。
 """
 
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,10 +18,19 @@ FIGURE_DIR = STORAGE_DIR / "figures"   # 从 PDF 中提取的图片
 CHROMA_DIR = STORAGE_DIR / "chroma"    # ChromaDB 持久化存储
 DB_PATH = STORAGE_DIR / "papers.db"    # SQLite 元数据库
 
+# ── API Keys ────────────────────────────────────────────────────────────────
+# 全系统只需要一个 Key，Gemini 同时承担文本 LLM 和 Embedding 两个职责
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
 # ── 模型配置 ────────────────────────────────────────────────────────────────
-EMBEDDING_MODEL = "text-embedding-3-small"  # 向量化模型，用于 chunk 入库和检索
-CHAT_MODEL = "gpt-4o"                       # 文本对话模型，用于问答和分类
-VISION_MODEL = "gpt-4o"                     # 多模态模型，用于图表解释（接受图片输入）
+# 文本 LLM：Google Gemini，处理意图分类、普通问答、Related Work 生成
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+
+# 视觉 LLM：本地 MLX 量化模型，处理图表解释任务（仅支持 Apple Silicon）
+VLM_MODEL_ID = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
+
+# Embedding 模型：Google gemini-embedding-001，用于 chunk 向量化和 ChromaDB 检索
+EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 # ── 分块与检索参数 ──────────────────────────────────────────────────────────
 CHUNK_SIZE = 800            # 每个 chunk 的最大字符数

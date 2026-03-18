@@ -32,7 +32,9 @@ pip install -r requirements.txt
 |---|------|
 | fastapi + uvicorn | 后端 API 服务 |
 | streamlit | 前端界面 |
-| openai | GPT-4o 对话 + embedding |
+| google-generativeai | Gemini 文本 LLM（分类、问答、写作） |
+| mlx-vlm | 本地视觉 LLM（图表解释，仅 Apple Silicon）|
+| openai | Embedding 向量化（text-embedding-3-small）|
 | langgraph | Agent 编排状态图 |
 | PyMuPDF (fitz) | PDF 图片提取 |
 | pdfplumber | PDF 文字提取 |
@@ -45,11 +47,14 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-编辑 `.env` 文件，填入你的 OpenAI Key：
+编辑 `.env` 文件，填入你的 API Key：
 
 ```
-OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx   # 用于 Embedding（向量化）
+GEMINI_API_KEY=AIzaSy-xxxxxxxxxxxxxxxxxxxxxxx # 用于文本 LLM（问答/分类/写作）
 ```
+
+> MLX VLM 模型（Qwen2.5-VL-3B）在首次提问图表类问题时自动从 HuggingFace 下载（约 2GB），不需要额外配置。
 
 ---
 
@@ -254,7 +259,13 @@ storage/                 # 运行时数据（自动创建）
 确认 `.env` 中的 `OPENAI_API_KEY` 正确，且账号有 `gpt-4o` 访问权限。
 
 **Q: 如何更换模型？**
-编辑 `app/config.py`，修改 `CHAT_MODEL`、`VISION_MODEL`、`EMBEDDING_MODEL`。
+编辑 `app/config.py`，修改 `GEMINI_MODEL`（文本）、`VLM_MODEL_ID`（视觉）、`EMBEDDING_MODEL`（向量化）。
+
+**Q: 图表解释第一次很慢？**
+首次触发 FigureAgent 时，系统会自动下载 Qwen2.5-VL-3B-Instruct-4bit 模型（约 2GB），下载完成后会缓存到本地，后续调用秒级响应。
+
+**Q: MLX VLM 在 Intel Mac / Linux 上能用吗？**
+`mlx-vlm` 仅支持 Apple Silicon（M1/M2/M3/M4），Intel Mac 和 Linux 不支持。如需跨平台，可将 `figure_agent` 改为调用 Gemini 的 vision 接口。
 
 **Q: 想重新解析某篇论文？**
 目前需要手动删除 `storage/` 下对应数据后重新上传。后续可扩展删除接口。

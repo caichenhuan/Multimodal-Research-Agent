@@ -17,6 +17,12 @@ API_BASE = "http://localhost:8000"
 
 st.set_page_config(page_title="Multimodal Research Agent", page_icon="📄", layout="wide")
 
+# ── 初始化 session_state ─────────────────────────────────────────────────
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
+if "uploaded_files" not in st.session_state:
+    st.session_state["uploaded_files"] = set()  # 已成功上传的文件名集合，防止重复上传
+
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────
 
@@ -27,28 +33,6 @@ def api(method: str, path: str, **kwargs) -> dict:
     return resp.json()
 
 
-def poll_until_done(task_id: str, placeholder):
-    """
-    轮询 /status 接口直到任务完成或失败。
-    每 2 秒查询一次，状态实时更新到 placeholder 组件。
-    """
-    while True:
-        data = api("GET", f"/status/{task_id}")
-        if not data.get("success"):
-            placeholder.error(f"Status check failed: {data.get('error')}")
-            return
-        info = data["data"]
-        status = info["status"]
-        placeholder.info(f"**{status}** — {info['progress_msg']}")
-        if status in ("ready", "failed"):
-            if status == "ready":
-                placeholder.success("Paper indexed and ready for Q&A!")
-            else:
-                placeholder.error(f"Processing failed: {info['progress_msg']}")
-            return
-        time.sleep(2)
-
-
 # ── 侧边栏：上传 PDF + 论文列表 ──────────────────────────────────────────
 
 with st.sidebar:
@@ -57,19 +41,47 @@ with st.sidebar:
     uploaded = st.file_uploader(
         "Upload PDF(s)", type=["pdf"], accept_multiple_files=True
     )
+
+    # 只上传尚未处理过的新文件（用文件名+大小做唯一标识）
     if uploaded:
-        for f in uploaded:
-            with st.status(f"Uploading {f.name}...") as upload_status:
-                resp = api("POST", "/upload", files={"file": (f.name, f.getvalue(), "application/pdf")})
-                if resp.get("success"):
-                    d = resp["data"]
-                    upload_status.update(label=f"Uploaded {f.name}", state="complete")
-                    progress_placeholder = st.empty()
-                    poll_until_done(d["task_id"], progress_placeholder)
-                else:
-                    upload_status.update(label=f"Failed: {resp.get('error')}", state="error")
-        # 上传完成后刷新页面，更新论文列表
-        st.rerun()
+        new_files = [
+            f for f in uploaded
+            if f"{f.name}_{f.size}" not in st.session_state["uploaded_files"]
+        ]
+        if new_files:
+            for f in new_files:
+                file_key = f"{f.name}_{f.size}"
+                with st.status(f"Uploading {f.name}...") as upload_status:
+                    resp = api(
+                        "POST", "/upload",
+                        files={"file": (f.name, f.getvalue(), "application/pdf")},
+                    )
+                    if resp.get("success"):
+                        d = resp["data"]
+                        st.session_state["uploaded_files"].add(file_key)
+                        upload_status.update(label=f"Uploaded {f.name}", state="complete")
+
+                        # 轮询解析进度，直到 ready 或 failed
+                        progress = st.empty()
+                        while True:
+                            status_data = api("GET", f"/status/{d['task_id']}")
+                            if not status_data.get("success"):
+                                progress.error(f"Status check failed: {status_data.get('error')}")
+                                break
+                            info = status_data["data"]
+                            status = info["status"]
+                            progress.info(f"**{status}** — {info['progress_msg']}")
+                            if status == "ready":
+                                progress.success("Paper indexed and ready for Q&A!")
+                                break
+                            elif status == "failed":
+                                progress.error(f"Processing failed: {info['progress_msg']}")
+                                break
+                            time.sleep(2)
+                    else:
+                        upload_status.update(label=f"Failed: {resp.get('error')}", state="error")
+
+            st.rerun()
 
     st.divider()
 
@@ -81,7 +93,6 @@ with st.sidebar:
         selected_ids = []
         for p in papers:
             status_icon = {"ready": "✅", "failed": "❌", "pending": "⏳"}.get(p["status"], "🔄")
-            # 默认勾选已就绪的论文
             if st.checkbox(
                 f"{status_icon} {p['title']} ({p['page_count']}p)",
                 key=p["paper_id"],
@@ -97,10 +108,6 @@ with st.sidebar:
 
 st.title("Multimodal Research Agent")
 
-# 初始化对话历史
-if "messages" not in st.session_state:
-    st.session_state["messages"] = []
-
 # 渲染历史消息
 for msg in st.session_state["messages"]:
     with st.chat_message(msg["role"]):
@@ -114,12 +121,10 @@ for msg in st.session_state["messages"]:
 query = st.chat_input("Ask a question about your papers...")
 
 if query:
-    # 记录并显示用户消息
     st.session_state["messages"].append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
 
-    # 过滤出已勾选且状态为 ready 的论文
     selected = st.session_state.get("selected_ids", [])
     ready_papers = [p for p in papers if p["paper_id"] in selected and p["status"] == "ready"]
 
@@ -131,7 +136,10 @@ if query:
     else:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                resp = api("POST", "/ask", json={"paper_ids": [p["paper_id"] for p in ready_papers], "query": query})
+                resp = api("POST", "/ask", json={
+                    "paper_ids": [p["paper_id"] for p in ready_papers],
+                    "query": query,
+                })
 
             if resp.get("success"):
                 data = resp["data"]
