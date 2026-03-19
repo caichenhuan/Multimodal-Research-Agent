@@ -42,9 +42,9 @@ class GeminiEmbeddingFunction(EmbeddingFunction):
     应对策略：小批量（每批 50 条） + 批间间隔 + 429 自动重试等待。
     """
 
-    BATCH_SIZE = 50        # 每批条数，留出余量避免刚好踩线
-    BATCH_DELAY = 1.0      # 批间等待秒数，平滑请求速率
-    MAX_RETRIES = 5        # 429 重试次数上限
+    BATCH_SIZE = 100       # 每批条数（付费版 RPM 充足，直接用最大值）
+    BATCH_DELAY = 0.0      # 付费版无需批间等待
+    MAX_RETRIES = 3        # 429 重试次数（付费版极少触发，保留兜底）
 
     def __init__(self, api_key: str, model_name: str):
         self._genai_client = genai.Client(api_key=api_key)

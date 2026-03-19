@@ -105,7 +105,10 @@ def _call_vlm(prompt: str, image_paths: list[str]) -> str:
         verbose=False,
         max_tokens=1024,
     )
-    return output or ""
+    # mlx_vlm.generate 返回 GenerationResult 对象，取 .text 拿纯文本
+    if hasattr(output, "text"):
+        return output.text or ""
+    return str(output) if output else ""
 
 
 # ═══════════════════════════════════════════════════════════════════════════
